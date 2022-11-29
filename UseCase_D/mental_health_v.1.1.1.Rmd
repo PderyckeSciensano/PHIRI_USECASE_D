@@ -1,0 +1,704 @@
+---
+title: "Use Case D: Investigating changes in population mental health related to COVID-19"
+author: ""
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE,
+                      out.width = "100%")
+library(tidyverse)
+library(readr)
+library(ggplot2)
+#library(MASS)
+library(dplyr) # if the subgroups are unique
+library(lubridate)
+library(plotly)
+library(DT)
+
+warning = function(x, options) {
+     paste('\n\n<div class="alert alert-warning">',
+           gsub('##', '\n', gsub('^##\ Warning:', '**Warning**', x)),
+           '</div>', sep = '\n')
+}
+
+
+calculate_socecon_lvl_ratio <- function(p1) {
+  
+  if(!("5" %in% colnames(p1)))
+  {
+    p1$`5` <- NA
+  }
+  if(!("4" %in% colnames(p1)))
+  {
+    p1$`4` <- NA
+  }
+  if(!("3" %in% colnames(p1)))
+  {
+    p1$`3` <- NA
+  }
+  if(!("2" %in% colnames(p1)))
+  {
+    p1$`2` <- NA
+  }
+  if(!("1" %in% colnames(p1)))
+  {
+    p1$`1` <- NA
+  }
+  p1 <- p1 %>% mutate(ratio = `1` /  sum(c(`5`,`4`,`3`,`2`),  na.rm=T))
+  return(p1)
+}
+
+
+```
+
+## Use Case D on utilization of health care services by mental health patients during the COVID pandemic ##
+The COVID-19 pandemic and the public health measures imposed to tackle the surge of cases has imposed a heavy burden in population mental health as people has limited social contact or has suffer from the consequences of disease and the derived economic downturn. This use case will explore changes in the utilization of health care services by people with depression or ansiety (as most prevalent mental health issues) derived as indirect effects of the COVID-19 pandemic at population level.   
+
+
+### LOCAL ANALYSES ###
+This analyses corresponds with the local part of the analysis (country-specific). 
+Please, provide feedback on your outputs, both data quality analysis (EDA), HTML report and aggregated output to the Use Case B leaders to complete the overall analyses.
+
+</br>
+
+```{r summary_proc , message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+## Read your data
+ucd <- read_delim("usecaseD_synthetic.csv", delim = "|", escape_double = FALSE, trim_ws = TRUE)
+
+ucd <- ucd %>% mutate(age_group = factor(cut(age_nm, seq(0, 109, 5), right = FALSE, 
+                        labels = c("0-4", "5-9", "10-14", "15-19", "20-24", 
+                                   "25-29", "30-34", "35-39", "40-44", "45-49",
+                                   "50-54", "55-59", "60-64", "65-69", "70-74",
+                                   "75-79", "80-84", "85-89", "90-94", "95-99", 
+                                   "99+")))) 
+
+#Create depression and anxiety diagnosis from ICD codes
+ucd$dep = 0
+ucd$anx = 0
+
+#ICD-10_mc
+ucd$dep<-as.numeric(substr(ucd$diagnosis, 1,2)=="F3")
+ucd$anx<-as.numeric(substr(ucd$diagnosis, 1,2)=="F4")
+
+#ICD-9_mc
+ucd$dep[ucd$dep == 0] <-as.numeric(ucd$diagnosis[ucd$dep == 0] %in% c("296.20","296.22","296.23","296.30","296.32","296.33","300.4","311")) 
+
+ucd$anx[ucd$anx == 0] <-as.numeric(ucd$diagnosis[ucd$anx == 0] %in% c("300.00","300.01","300.02","300.09")) 
+
+
+
+#SNOMED
+ucd$dep[ucd$dep == 0] <-as.numeric(ucd$diagnosis[ucd$dep == 0] %in% c("46206005","370143000","712823008")) 
+ucd$anx[ucd$anx == 0] <-as.numeric(ucd$diagnosis[ucd$anx == 0] %in% c("197480006","21897009")) 
+
+
+init_year <- year(min(min(ucd$dx_date,na.rm = TRUE),min(ucd$drug_date,na.rm = TRUE),min(ucd$visit_date,na.rm = TRUE)))
+end_year <- year(max(max(ucd$dx_date,na.rm = TRUE),max(ucd$drug_date,na.rm = TRUE),max(ucd$visit_date,na.rm = TRUE)))
+diff_years <- (end_year - init_year) + 1
+
+
+year_months_0 <- data.frame(month=rep(1:12,diff_years),year= rep(init_year:end_year,each=12),sex = 0)
+year_months_1 <- data.frame(month=rep(1:12,diff_years),year= rep(init_year:end_year,each=12),sex = 1)
+year_months <- rbind(year_months_0, year_months_1)
+rownames(year_months) <- NULL
+
+
+
+dx_per_month_year <- ucd %>% 
+    mutate(month = month(dx_date), year = year(dx_date)) %>% dplyr::select(year,month,sex) %>% 
+    group_by(year, month, sex) %>% count() 
+names(dx_per_month_year) <- c("year","month","sex","total_dx")
+
+
+
+dx_per_month_year <- merge(year_months, dx_per_month_year, by=c("year","month","sex"),all.x = TRUE)
+dx_per_month_year[is.na(dx_per_month_year)] <- 0
+
+
+drug_per_month_year <- ucd %>% 
+  mutate(month = month(drug_date), year = year(drug_date)) %>% dplyr::select(year,month,sex) %>% 
+  group_by(year, month, sex) %>% count() 
+names(drug_per_month_year) <- c("year","month","sex","total_drug")
+
+drug_per_month_year <- merge(year_months, drug_per_month_year, by=c("year","month","sex"),all.x = TRUE)
+drug_per_month_year[is.na(drug_per_month_year)] <- 0
+
+
+
+dep_mo <- ucd %>% filter(dep == 1) %>%  mutate(month = month(dx_date), year = year(dx_date)) %>%
+  dplyr::select(year,month,sex,dep) %>% group_by(year, month, sex) %>% count() 
+names(dep_mo) <- c("year","month","sex","total_dep")  
+  
+
+dep_mo <- merge(year_months, dep_mo, by=c("year","month","sex"),all.x = TRUE)
+dep_mo[is.na(dep_mo)] <- 0
+
+
+anx_mo <- ucd %>% filter(anx == 1) %>%  mutate(month = month(dx_date), year = year(dx_date)) %>% dplyr::select(year,month,sex,anx) %>%  
+  group_by(year, month, sex) %>% count() 
+
+names(anx_mo) <- c("year","month","sex","total_anx")  
+
+
+anx_mo <- merge(year_months, anx_mo, by=c("year","month","sex"),all.x = TRUE)
+anx_mo[is.na(anx_mo)] <- 0
+
+prim_visit_mo <- ucd %>% mutate(month = month(visit_date), year = year(visit_date)) %>% dplyr::select(year,month,sex,prim_visit) %>% na.omit(.) %>%
+  group_by(year, month, sex) %>% 
+  summarise(total_prim_visit = sum(prim_visit))
+
+
+
+prim_visit_mo <- merge(year_months, prim_visit_mo, by=c("year","month","sex"),all.x = TRUE)
+prim_visit_mo[is.na(prim_visit_mo)] <- 0
+
+hosp_visit_mo <- ucd %>% mutate(month = month(visit_date), year = year(visit_date)) %>% dplyr::select(year,month,sex,hosp_visit) %>% na.omit(.) %>% 
+  group_by(year, month, sex) %>% 
+  summarise(total_hosp_visit = sum(hosp_visit))
+  
+
+
+hosp_visit_mo <- merge(year_months, hosp_visit_mo, by=c("year","month","sex"),all.x = TRUE)
+hosp_visit_mo[is.na(hosp_visit_mo)] <- 0
+  
+emer_visit_mo <- ucd %>% mutate(month = month(visit_date), year = year(visit_date)) %>% dplyr::select(year,month,sex,emer_visit) %>% na.omit(.) %>%
+  group_by(year, month, sex) %>% 
+  summarise(total_emer_visit = sum(emer_visit))
+
+
+emer_visit_mo <- merge(year_months, emer_visit_mo, by=c("year","month","sex"),all.x = TRUE)
+emer_visit_mo[is.na(emer_visit_mo)] <- 0
+
+
+summary_table <- merge(dx_per_month_year, drug_per_month_year, by=c("year","month","sex"),all.x = TRUE)
+summary_table <- merge(summary_table, dep_mo, by=c("year","month","sex"),all.x = TRUE)
+summary_table <- merge(summary_table, anx_mo, by=c("year","month","sex"),all.x = TRUE)
+summary_table <- merge(summary_table, prim_visit_mo, by=c("year","month","sex"),all.x = TRUE)
+summary_table <- merge(summary_table, hosp_visit_mo, by=c("year","month","sex"),all.x = TRUE)
+summary_table <- merge(summary_table, emer_visit_mo, by=c("year","month","sex"),all.x = TRUE)
+summary_table <- summary_table %>% filter(year >= 2017)
+
+if(class(summary_table$total_dx)=="list"){summary_table$total_dx <- 0}
+if(class(summary_table$total_drug)=="list"){summary_table$total_drug <- 0}
+if(class(summary_table$total_dep)=="list"){summary_table$total_dep <- 0}
+if(class(summary_table$total_anx)=="list"){summary_table$total_anx <- 0}
+if(class(summary_table$total_prim_visit)=="list"){summary_table$total_prim_visit <- 0}
+if(class(summary_table$total_hosp_visit)=="list"){summary_table$total_hosp_visit <- 0}
+if(class(summary_table$total_emer_visit)=="list"){summary_table$total_emer_visit <- 0}
+
+
+
+dataset1 <- ucd %>% filter(!is.na(dx_date)) %>%
+  mutate(month = month(dx_date), year = year(dx_date)) %>%  
+  count(year,month,age_group,sex,socecon_lvl_cd) %>% rename(total_dx = n )
+
+
+dataset2 <- ucd %>% filter(!is.na(visit_date)) %>%
+  mutate(month = month(visit_date), year = year(visit_date)) %>%  
+  count(year,month,age_group,sex,socecon_lvl_cd) %>% rename(total_drug = n )
+
+
+dataset3 <- ucd%>% filter(!is.na(visit_date)) %>%
+  mutate(month = month(visit_date), year = year(visit_date)) %>% 
+  group_by(year,month,age_group,sex,socecon_lvl_cd) %>%
+  summarise(total_prim_visit = sum(prim_visit))
+
+dataset4 <- ucd%>% filter(!is.na(visit_date)) %>%
+  mutate(month = month(visit_date), year = year(visit_date)) %>% 
+  group_by(year,month,age_group,sex,socecon_lvl_cd) %>%
+  summarise(total_hosp_visit = sum(hosp_visit))
+
+dataset5 <- ucd%>% filter(!is.na(visit_date)) %>%
+  mutate(month = month(visit_date), year = year(visit_date)) %>% 
+  group_by(year,month,age_group,sex,socecon_lvl_cd) %>%
+  summarise(total_emer_visit = sum(emer_visit))
+
+summary_table_aggregated <- merge(x=dataset1,y=dataset2,by=c("year","month","age_group","sex","socecon_lvl_cd"),all=TRUE)
+summary_table_aggregated <- merge(x=summary_table_aggregated,y=dataset3,by=c("year","month","age_group","sex","socecon_lvl_cd"),all=TRUE)
+summary_table_aggregated <- merge(x=summary_table_aggregated,y=dataset4,by=c("year","month","age_group","sex","socecon_lvl_cd"),all=TRUE)
+summary_table_aggregated <- merge(x=summary_table_aggregated,y=dataset5,by=c("year","month","age_group","sex","socecon_lvl_cd"),all=TRUE)
+summary_table_aggregated[is.na(summary_table_aggregated)] <- 0
+summary_table_aggregated <- summary_table_aggregated %>% filter(year >= 2017)
+
+
+
+```
+
+
+
+```{r plot1 , message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+# convert values to months
+month_breaks <- c(1,2,3,4,5,6,7,8,9,10,11,12)
+month_names <-
+  c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+
+
+
+
+#############################################################################
+#                             TOTAL _DX                                     #
+#############################################################################
+
+summary_table$sex[summary_table$sex == 0] <- "men"
+summary_table$sex[summary_table$sex == 1] <- "women"
+
+
+p1<- ggplot(summary_table, aes(x=month, y=total_dx, color = as.factor(year), linetype = as.factor(sex), fill = as.factor(sex))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", sum(summary_table$total_dx)),
+       title = "All events",
+       color = "Year",
+       linetype = "Sex") +
+  ylab(paste0("Absolute number of cases (N=", sum(summary_table$total_dx),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels = month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption = element_text(hjust = 1))
+
+ggplotly(p1)
+
+
+```
+
+```{r ratio, message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+highest_socecon_lvl <- length(levels(factor(ucd$socecon_lvl_cd)))
+highest_socecon_lvl <- `highest_socecon_lvl`
+
+dataAva <- nrow(ucd %>% 
+  mutate(month = str_pad(month(dx_date), 2, pad = "0"), year = year(dx_date)) %>% filter(year >= 2017) %>% mutate(year_key = paste0(year,'-',month)) %>%
+  group_by(year_key) %>%
+  count(socecon_lvl_cd)) >0
+
+if(!is.na(highest_socecon_lvl) && highest_socecon_lvl!=0 && dataAva){
+p1 <-
+  ucd %>% 
+  mutate(month = str_pad(month(dx_date), 2, pad = "0"), year = year(dx_date)) %>% filter(year >= 2017) %>% mutate(year_key = paste0(year,'-',month)) %>%
+  group_by(year_key) %>%
+  count(socecon_lvl_cd) %>%
+  pivot_wider(id_cols = year_key, names_from = socecon_lvl_cd, values_from = n)
+
+p1 <- calculate_socecon_lvl_ratio(p1) 
+  
+p1 <- p1 %>% 
+  ggplot(aes(x= year_key, y=ratio, group = 1)) +
+  geom_line(size=1) +
+  geom_smooth(method = "loess",show.legend=TRUE) + 
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title = "Ratio of most to least deprived",
+       y= "Ratio most deprived / any socioeconomic level",
+       x= "Time",
+       color = "Year") +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption = element_text(hjust = 1)) 
+
+
+
+ggplotly(p1) %>%
+  layout(title = list(text = paste0('Ratio of most to least deprived',
+                                    '<br>',
+                                    '<sup>',
+                                    '*Loess regression',
+                                    '</sup>')))
+}
+
+
+```
+
+`r if(!dataAva){ warning("Warning: No information available on 'dx_date'") }`
+
+
+`r if(is.na(highest_socecon_lvl) || highest_socecon_lvl==0 ){ warning("Warning: No information available on 'socecon_lvl_cd'") }`
+
+
+
+</br>
+</br>
+
+```{r plot2,  message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+summary_table$sex[summary_table$sex == "men"] <- 0
+summary_table$sex[summary_table$sex == "women"] <- 1
+
+p2<-summary_table %>%  filter(sex==1) %>% ggplot(aes(x=month, y=total_dx, color = as.factor(year))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", length(ucd$dx_date[ucd$sex == 1 & !is.na(ucd$dx_date)])),
+       title = "Female",
+       color = "Year") +
+  ylab(paste0("Absolute number of cases (N=", length(ucd$dx_date[ucd$sex == 1 & !is.na(ucd$dx_date)]),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+ggplotly(p2)
+
+
+```
+
+</br>
+</br>
+
+```{r plot3 , message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+p3<-summary_table %>%  filter(sex==0) %>% ggplot(aes(x=month, y=total_dx, color = as.factor(year))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", length(ucd$dx_date[ucd$sex == 0 & !is.na(ucd$dx_date)])),
+       title = "Male",
+       color = "Year") +
+  ylab(paste0("Absolute number of cases (N=", length(ucd$dx_date[ucd$sex == 0 & !is.na(ucd$dx_date)]),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+ggplotly(p3)
+
+```
+
+</br>
+</br>
+
+```{r plot4,  message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+#############################################################################
+#                             Admissions                                    #
+#############################################################################
+
+summary_table$sex[summary_table$sex == 0] <- "men"
+summary_table$sex[summary_table$sex == 1] <- "women"
+
+
+p1<- summary_table %>% select(year,month,sex,total_prim_visit) %>% 
+  group_by(year,month)  %>% 
+ggplot(aes(x=month, y=total_prim_visit, color = as.factor(year), linetype = as.factor(sex), fill = as.factor(sex))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", sum(summary_table$total_prim_visit)),
+       title = "Primary care admissions",
+       color = "Year",
+       lty = "Sex") +
+  ylab(paste0("Absolute number of cases (N=", sum(summary_table$total_prim_visit),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+
+ggplotly(p1)
+
+
+```
+
+`r if(sum(summary_table$total_prim_visit)==0){ warning("Warning: No information available on 'prim_visit'") }`
+
+</br>
+</br>
+
+```{r plot5, message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+##
+
+
+p2<-ggplot(summary_table, aes(x=month, y=total_hosp_visit, color = as.factor(year), linetype = as.factor(sex), fill = as.factor(sex))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", sum(summary_table$total_hosp_visit)),
+       title = "Hospital admissions",
+       color = "Year",
+       lty = "Sex") +
+  ylab(paste0("Absolute number of cases (N=", sum(summary_table$total_hosp_visit),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+ggplotly(p2)
+
+```
+
+`r if(sum(summary_table$total_hosp_visit)==0){ warning("Warning: No information available on 'hosp_visit'") }`
+
+</br>
+</br>
+
+```{r plot6,  message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+p2<-ggplot(summary_table, aes(x=month, y=total_emer_visit, color = as.factor(year), linetype = as.factor(sex), fill = as.factor(sex))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", sum(summary_table$total_emer_visit)),
+       title = "Emergency admissions",
+       color = "Year",
+       lty = "Sex") +
+  ylab(paste0("Absolute number of cases (N=", sum(summary_table$total_emer_visit),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+ggplotly(p2)
+
+```
+
+
+`r if(sum(summary_table$total_emer_visit)==0){ warning("Warning: No information available on 'emer_visit'") }`
+</br>
+</br>
+
+```{r plot7,  message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+#############################################################################
+#                             Diagnosis of Anxiety                          #
+#############################################################################
+ 
+
+p1<-ggplot(summary_table, aes(x=month, y=total_anx, color = as.factor(year), linetype = as.factor(sex), fill = as.factor(sex))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", sum(summary_table$total_anx)),
+       title = "Diagnosis of Anxiety",
+       color = "Year",
+       lty = "Sex") +
+  ylab(paste0("Absolute number of cases (N=", sum(summary_table$total_anx),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+ggplotly(p1)
+
+
+```
+
+</br>
+</br>
+
+```{r plot8,  message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+#############################################################################
+#                             Diagnosis of Anxiety                          #
+#############################################################################
+
+
+p1<-ggplot(summary_table, aes(x=month, y=total_dep, color = as.factor(year), linetype = as.factor(sex), fill = as.factor(sex))) +
+  geom_line(size = 1) +
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_vline(xintercept = 3.76, color = "red", linetype = 2, size = 1) +
+  labs(subtitle = paste0("n = ", sum(summary_table$total_dep)),
+       title = "Diagnosis of Depression",
+       color = "Year",
+       lty = "Sex") +
+  ylab(paste0("Absolute number of cases (N=", sum(summary_table$total_dep),")"))  +
+  expand_limits(y = 0) +
+  scale_x_continuous(name = "Month", breaks = month_breaks[1:12], labels =
+                       month_names, expand = c(0,0)) +
+  theme(plot.subtitle = element_text(hjust = 1), plot.caption =
+          element_text(hjust = 1))
+
+ggplotly(p1)
+
+
+```
+
+</br>
+</br>
+
+### Summary table with total monthly cases by indicator ### 
+
+```{r plottable , message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+summary_table$sex[summary_table$sex == "men"] <- 0
+summary_table$sex[summary_table$sex == "women"] <- 1
+
+datatable(summary_table, class = 'cell-border stripe')
+
+```
+
+</br>
+</br>
+
+```{r}
+
+
+
+ucd$year <- as.numeric(strftime(ucd$dx_date, "%Y"))    # Create year column
+ucd$month <- as.numeric(strftime(ucd$dx_date, "%m"))
+
+dataAva <- sum(is.na(ucd$year)) < length(ucd$year)
+
+if(dataAva){
+  ucd <- ucd %>%  mutate(year_month = as.Date(paste0(year,'-',month,"-01"))) %>% filter(year_month >= "2017-01-01")
+
+
+
+ 
+init_year <- min(ucd$year,na.rm = TRUE)
+end_year <- max(ucd$year,na.rm = TRUE)
+
+
+  #In the next step, we can apply the aggregate function to convert our daily data to monthly data:
+new_dx =data.frame(aggregate(dep ~ month + year, ucd , FUN = sum), 
+                    aggregate(anx ~ month + year, ucd, FUN = sum),
+                    aggregate(cbind(count = patient_id) ~ month + year, ucd, FUN = function(x){NROW(x)}))
+
+## TODO ATENTO SI ES MAS DE 2020
+# Dx depression per month
+ts_new_dep <- ts(new_dx$dep, start=c(init_year, 1), end=c(end_year, 12), frequency=12)
+ts_new_anx <- ts(new_dx$anx, start=c(init_year, 1), end=c(end_year, 12), frequency=12)
+
+ts.plot(ts_new_dep, ts_new_anx, gpars = list(col = c("black", "red"),
+                                                  xlab="month of diagnosis",
+                                                  ylab="n", lty=c(1:2)),
+             main = "New depression/anxiety diagnosis") 
+
+
+legend("topright", legend = c("Depression", "Anxiety"), col = 1:2, lty=c(1:2))
+
+}
+
+
+
+```
+`r if(!dataAva){ warning("Warning: No information available on 'dx_date'") }`
+
+</br>
+</br>
+
+```{r}
+
+if(dataAva){
+
+init_year <- year(min(ucd$year_month,na.rm = TRUE ))
+end_year <- year(max(ucd$year_month,na.rm = TRUE))
+diff_years <- (end_year - init_year) + 1 
+
+dx_dep_mo <- data.frame(mo=rep(1:12,diff_years),yr=factor(rep(init_year:end_year,each=12)),
+                  aggregate(ucd$dep, by = list(ucd$year_month), FUN = sum),
+                  aggregate(ucd$patient_id, by = list(ucd$year_month), FUN = length))
+
+dx_dep_mo$prop_dep_mo=dx_dep_mo$x*100/dx_dep_mo$x.1
+
+
+# plot
+
+p <- ggplot(dx_dep_mo,aes(x=mo,y=prop_dep_mo, col=yr,group=yr))+
+  geom_line(size=0.5, aes(color=yr))+ geom_point(size=3)+
+  labs(x="Month of diagnosis", y="Percentage of new depressions", 
+       title = "New diagnoses of depression among patients with ill-mental health",color = "Year")  + ylim(0, 100) +  
+  scale_x_continuous(breaks=c(1:12),
+       labels=c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))+
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) 
+
+
+ggplotly(p)
+
+}
+
+```
+
+`r if(!dataAva){ warning("Warning: No information available on 'dx_date'") }`
+
+</br>
+</br>
+
+```{r}
+# anxiety per month
+if(dataAva){
+
+col1 <- aggregate(ucd$anx, by = list(ucd$year_month), FUN = sum)
+names(col1) <- c("fecha","x")
+
+dx_anx_mo=data.frame(mo=rep(1:12,diff_years),yr=factor(rep(init_year:end_year,each=12)),
+                  aggregate(ucd$anx, by = list(ucd$year_month), FUN = sum),
+                  aggregate(ucd$patient_id, by = list(ucd$year_month), FUN = length))
+
+dx_anx_mo$prop_anx_mo=dx_anx_mo$x*100/dx_anx_mo$x.1
+
+
+# plot
+
+p2 <- ggplot(dx_anx_mo,aes(x=mo,y=prop_anx_mo, col=yr,group=yr))+
+  geom_line(size=0.5, aes(color=yr))+ geom_point(size=3)+
+  labs(x="Month of diagnosis", y="Percentage of new anxieties", 
+       title = "New diagnoses of anxiety among patients with ill-mental health",color = "Year")  + ylim(0, 100) +  
+  scale_x_continuous(breaks=c(1,2,3,4,5,6,7,8,9,10,11,12),
+                     labels=c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))+
+  theme(panel.grid.major.x = element_line( color = "grey"),
+        panel.grid.major.y = element_blank(), panel.border = element_blank(),
+        panel.grid.minor = element_blank(), panel.background = element_blank(),
+        axis.line = element_line(color = "black")) 
+
+ggplotly(p2)
+}
+
+
+
+```
+`r if(!dataAva){ warning("Warning: No information available on 'dx_date'") }`
+
+```{r write_aggregated,  message=FALSE, echo=FALSE, warning=FALSE, error=FALSE}
+
+## add country
+
+summary_table_aggregated$country <- unique(ucd$country_cd)[1]
+write.csv(summary_table_aggregated, file = "aggregated_outputs.csv", row.names = FALSE)
+
+
+```
+
